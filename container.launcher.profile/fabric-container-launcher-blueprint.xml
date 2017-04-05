@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<blueprint xmlns="http://www.osgi.org/xmlns/blueprint/v1.0.0"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xmlns:cm="http://aries.apache.org/blueprint/xmlns/blueprint-cm/v1.1.0"
+           xsi:schemaLocation="
+         http://www.osgi.org/xmlns/blueprint/v1.0.0 https://www.osgi.org/xmlns/blueprint/v1.0.0/blueprint.xsd
+         http://camel.apache.org/schema/blueprint http://camel.apache.org/schema/blueprint/camel-blueprint.xsd">
+
+    <cm:property-placeholder persistent-id="fabric.container.launcher" update-strategy="reload"/>
+
+    <reference id="fabricService" interface="io.fabric8.api.FabricService"/>
+
+    <bean id="startList" class="org.apache.commons.lang3.StringUtils" factory-method="split">
+        <argument value="${fabric.container.launcher.startList}"/>
+        <argument value=","/>
+    </bean>
+
+    <camelContext id="fabric-container-launcher-context" xmlns="http://camel.apache.org/schema/blueprint">
+        <route id="launcher-scan">
+            <from uri="timer:launcherScan?period={{fabric.container.launcher.rescanTimeout}}"/>
+            <log message="Mode: {{fabric.container.launcher.mode}}"/>
+            <setBody>
+                <method ref="fabricService" method="getCurrentContainer"/>
+            </setBody>
+            <log message="Current container id: ${body.id} pending: ${body.isProvisioningPending}"/>
+            <when>
+                <simple>${body.isProvisioningPending} == true</simple>
+                <log message="Current container provisioning pending, wait while complete" loggingLevel="INFO"/>
+                <stop/>
+            </when>
+
+            <choice>
+                <when>
+                    <simple>${properties:fabric.container.launcher.mode} == "all"</simple>
+                    <setBody>
+                        <simple>${body.children}</simple>
+                    </setBody>
+                    <log message="Children containers count: ${body.length}"/>
+                    <split>
+                        <simple>${body}</simple>
+                        <to uri="direct:startContainer"/>
+                    </split>
+                </when>
+                <when>
+                    <simple>${properties:fabric.container.launcher.mode} == "on"</simple>
+                    <setBody>
+                        <simple>${ref:startList}</simple>
+                    </setBody>
+                    <log message="StartList len: ${body.length}"/>
+                    <split>
+                        <simple>${body}</simple>
+                        <to uri="bean:fabricService?method=getContainer(${body})"/>
+                        <to uri="direct:startContainer"/>
+                    </split>
+                </when>
+                <otherwise>
+                    <log message="Launcher turn off" loggingLevel="INFO"/>
+                </otherwise>
+            </choice>
+        </route>
+
+        <route id="start-container">
+            <from uri="direct:startContainer"/>
+            <log message="Container: ${body.id} isEnsembleServer: ${body.isEnsembleServer} isRoot: ${body.isRoot} Alive: ${body.isAliveAndOK}
+              Provision: Result=${body.provisionResult} - Status=${body.provisionStatus} - Pending=${body.isProvisioningPending}"/>
+            <log message="PID: ${body.processId}"/>
+            <when>
+                <simple>${body.isRoot} != true &amp;&amp; ${body.isAlive} != true &amp;&amp; ${body.isEnsembleServer} !=
+                    true &amp;&amp; ${body.isProvisioningPending} != true
+                </simple>
+                <log message="Starting container ${body.id}" loggingLevel="INFO"/>
+                <setBody>
+                    <simple>${body.start}</simple>
+                </setBody>
+                <delay>
+                    <constant>{{fabric.container.launcher.startTimeout}}</constant>
+                </delay>
+            </when>
+        </route>
+    </camelContext>
+</blueprint>
